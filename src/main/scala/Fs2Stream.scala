@@ -78,8 +78,7 @@ object Fs2Stream extends IOApp {
                 log.info(s"State updated: $s") *>
                 IO.sleep(StateUpdateDelay)
             }
-        }).repeat
-          .through(retryOnErrors(log))
+        }).through(retryOnErrors(log))
           .concurrently(sigState.discrete.through(snapshot(log)))
           .concurrently(sigState.discrete.through(ping(log)))
       }
