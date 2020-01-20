@@ -29,7 +29,7 @@ import scala.util.Random
 // @formatter:on
 object Fs2Stream extends IOApp {
 
-  private val ShutdownTimeount = 1 minute
+  private val ShutdownTimeout = 1 minute
   private val SnapshotInterval = 5
   private val MarkersPerQuery = 4
 
@@ -47,7 +47,7 @@ object Fs2Stream extends IOApp {
       log <- Stream.eval(Slf4jLogger.fromClass[IO](this.getClass))
       result <- buildStream(log)
     } yield result
-    stream.interruptWhen(Stream.awakeEvery[IO](ShutdownTimeount).map(_ => true))
+    stream.interruptWhen(Stream.awakeEvery[IO](ShutdownTimeout).map(_ => true))
       .compile.drain.as(ExitCode.Success)
   }
 
