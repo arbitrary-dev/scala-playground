@@ -1,0 +1,11 @@
+.java-version
+
+*.swp
+*.orig
+
+target
+*.iml
+.idea
+
+.bloop
+.metals
