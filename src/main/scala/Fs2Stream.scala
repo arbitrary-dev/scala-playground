@@ -141,8 +141,7 @@ object Fs2Stream extends IOApp {
 
   private def snapshot(log: Logger[IO]) = (st: Stream[IO, State]) => {
     st.zipWithIndex
-      .filter(_._2 % SnapshotInterval == 0)
-      .map(_._1)
+      .collect { case (state, idx) if idx > 0 && idx % SnapshotInterval == 0 => state }
       .evalTap(state => log.info(s"State snapshot made: $state"))
   }
 
