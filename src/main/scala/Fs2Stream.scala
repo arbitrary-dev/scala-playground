@@ -20,7 +20,7 @@ import scala.util.Random
   * 4. New state passed back to step 2 and are used to stream new markers
   * 5. At the same time all produced states (+ initial) are piped to [[Fs2Stream#snapshot]]
   *    and [[Fs2Stream#ping]] separately for additional processing
-  * 6. In case of errors occured the stream
+  * 6. In case of errors - the processing is retried with exponential backoff
   *
   * Unresolved questions:
   * 1. Is [[SignallingRef]] approach for passing states optimal?
