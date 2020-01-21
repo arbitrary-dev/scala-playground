@@ -47,7 +47,7 @@ object Fs2StreamFeedback extends IOApp {
       log <- Stream.eval(Slf4jLogger.fromClass[IO](this.getClass))
       result <- buildStream(log)
     } yield result
-    stream.interruptWhen(Stream.awakeEvery[IO](ShutdownTimeout).map(_ => true))
+    stream.interruptAfter(ShutdownTimeout)
       .compile.drain.as(ExitCode.Success)
   }
 

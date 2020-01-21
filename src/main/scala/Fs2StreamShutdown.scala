@@ -7,16 +7,18 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.language.postfixOps
 
-/** Fs2 stream app to express async stream shutdown */
+/** FS2 stream app to express async stream shutdown */
 object Fs2StreamShutdown extends App {
 
   private implicit val timer: Timer[IO] = IO.timer(implicitly)
   private implicit val cs: ContextShift[IO] = IO.contextShift(implicitly)
   private implicit val conc: Concurrent[IO] = IO.ioConcurrentEffect
 
+  private val PingInterval = 1 second
+
   val stream = for {
     log <- Stream.eval(Slf4jLogger.fromClass[IO](this.getClass))
-    result <- Stream.repeatEval(log.info("Hello world!")).metered(1 second)
+    result <- Stream.repeatEval(log.info("Hello world!")).metered(PingInterval)
       .onFinalizeCase {
         case Completed =>
           log.warn("Stream completed")
