@@ -4,13 +4,6 @@ version := "0.1"
 
 scalaVersion := "2.12.10"
 
-// Required so that javaOptions get applied
-fork := true
-javaOptions ++= Seq(
-  "-Dorg.slf4j.simpleLogger.showDateTime=true",
-  "-Dorg.slf4j.simpleLogger.dateTimeFormat=HH:mm:ss.SSS",
-)
-
 libraryDependencies ++= Seq(
   "co.fs2" %% "fs2-core" % "2.1.0",
 
