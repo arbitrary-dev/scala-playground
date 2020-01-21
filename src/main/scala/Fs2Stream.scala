@@ -79,8 +79,8 @@ object Fs2Stream extends IOApp {
                 IO.sleep(StateUpdateDelay)
             }
         }).through(retryOnErrors(log))
-          .concurrently(sigState.discrete.through(snapshot(log)))
-          .concurrently(sigState.discrete.through(ping(log)))
+          .concurrently(snapshot(log, sigState))
+          .concurrently(ping(log, sigState))
       }
     } yield state
 
@@ -139,14 +139,16 @@ object Fs2Stream extends IOApp {
       .evalTap(m => log.info(s"Mark received: $m"))
   }
 
-  private def snapshot(log: Logger[IO]) = (st: Stream[IO, State]) => {
-    st.zipWithIndex
+  private def snapshot(log: Logger[IO], sigState: SignallingRef[IO, State]) = {
+    sigState.discrete
+      .zipWithIndex
       .collect { case (state, idx) if idx > 0 && idx % SnapshotInterval == 0 => state }
       .evalTap(state => log.info(s"State snapshot made: $state"))
   }
 
-  private def ping(log: Logger[IO]) = (st: Stream[IO, State]) => {
-    st.debounce(PingInterval)
+  private def ping(log: Logger[IO], sigState: SignallingRef[IO, State]) = {
+    Stream.repeatEval(sigState.get)
+      .metered(PingInterval)
       .flatMap(state => Stream.emits(state.nums.grouped(PingLimit).toSeq))
       .metered(PingsSendInterval)
       .evalTap { nums =>
