@@ -29,12 +29,15 @@ object Fs2StreamShutdown extends App {
       }
   } yield result
 
-  val fib = stream.spawn.compile.lastOrError.unsafeRunSync()
+  // val fib = stream.spawn.compile.lastOrError.unsafeRunSync()
+  val cancel = stream.compile.drain.runCancelable(_ => IO.unit).unsafeRunSync()
 
   Thread.sleep(5000) // 5 seconds
-
   println("Stop it!")
-  fib.cancel.unsafeRunSync()
+
+  // fib.cancel.unsafeRunSync()
+  cancel.unsafeRunSync()
 
   Thread.sleep(5000) // 5 seconds
+  println("Shutdown app")
 }
