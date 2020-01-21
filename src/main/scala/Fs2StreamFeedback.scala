@@ -11,15 +11,15 @@ import scala.language.postfixOps
 import scala.util.Random
 
 // @formatter:off
-/** Sample FS2 streams app.
+/** Sample FS2 streams app with feedback.
   *
   * Expected workflow is as follows:
   * 1. Initial state received
   * 2. Markers streamed from the offset stored in initial state
   * 3. Markers update the state
   * 4. New state passed back to step 2 and are used to stream new markers
-  * 5. At the same time all produced states (+ initial) are piped to [[Fs2Stream#snapshot]]
-  *    and [[Fs2Stream#ping]] separately for additional processing
+  * 5. At the same time all produced states (+ initial) are piped to [[Fs2StreamFeedback#snapshot]]
+  *    and [[Fs2StreamFeedback#ping]] separately for additional processing
   * 6. In case of errors - the processing is retried with exponential backoff
   *
   * Unresolved questions:
@@ -27,7 +27,7 @@ import scala.util.Random
   * 2. How to reset retry delays?
   */
 // @formatter:on
-object Fs2Stream extends IOApp {
+object Fs2StreamFeedback extends IOApp {
 
   private val ShutdownTimeout = 1 minute
   private val SnapshotInterval = 5
@@ -129,7 +129,7 @@ object Fs2Stream extends IOApp {
     Stream.emit(State(last = 1.some, nums = Set(1)))
       .evalMap { state =>
         log.info(s"Initial state received: $state") *>
-          SignallingRef[IO, State](state)
+          SignallingRef[IO, State](state) // Provides feedback mechanism
       }
   }
 
