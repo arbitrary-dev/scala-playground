@@ -147,10 +147,13 @@ object Fs2StreamFeedback extends IOApp {
   }
 
   private def ping(log: Logger[IO], sigState: SignallingRef[IO, State]) = {
-    Stream.repeatEval(sigState.get)
+    sigState.continuous
       .metered(PingInterval)
-      .flatMap(state => Stream.emits(state.nums.grouped(PingLimit).toSeq))
-      .metered(PingsSendInterval)
+      .flatMap { state =>
+        Stream.emits(state.nums.grouped(PingLimit).toSeq)
+          .covary[IO]
+          .metered(PingsSendInterval)
+      }
       .evalTap { nums =>
         if (nums.isEmpty)
           log.info(s"Ping wasn't sent, state is empty")
