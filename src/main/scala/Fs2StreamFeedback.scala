@@ -51,15 +51,13 @@ object Fs2StreamFeedback extends IOApp {
       .compile.drain.as(ExitCode.Success)
   }
 
-  private def buildStream(
-    log: Logger[IO],
-  ): Stream[IO, INothing] = {
+  private def buildStream(implicit log: Logger[IO]): Stream[IO, INothing] = {
     val states = for {
       _ <- Stream.eval(log.info("Hello world!"))
-      sigState <- initialState(log) // TODO is [[SignallingRef]] optimal solution?
+      sigState <- initialState // TODO is [[SignallingRef]] optimal solution?
       state <- {
         (sigState.continuous flatMap { state =>
-          markers(log, offset = state.last)
+          markers(offset = state.last)
             .mapAccumulate(state) { (s, o) =>
               val num = o % StateSize
               val newNums = if (s.nums contains num) s.nums - num else s.nums + num
@@ -78,9 +76,9 @@ object Fs2StreamFeedback extends IOApp {
                 log.info(s"State updated: $s") *>
                 IO.sleep(StateUpdateDelay)
             }
-        }).through(retryOnErrors(log))
-          .concurrently(snapshot(log, sigState))
-          .concurrently(ping(log, sigState))
+        }).through(retryOnErrors)
+          .concurrently(snapshots(sigState))
+          .concurrently(pings(sigState))
       }
     } yield state
 
@@ -97,7 +95,7 @@ object Fs2StreamFeedback extends IOApp {
       }
   }
 
-  private def retryOnErrors[A](log: Logger[IO]) = (st: Stream[IO, A]) => {
+  private def retryOnErrors[A](implicit log: Logger[IO]) = (st: Stream[IO, A]) => {
     val nextDelay = (_: FiniteDuration) * 2
     val delays = Stream.unfold(1 second)(d => Some(d -> nextDelay(d))).covary[IO]
     val retriable = scala.util.control.NonFatal.apply _
@@ -125,7 +123,7 @@ object Fs2StreamFeedback extends IOApp {
       .rethrow
   }
 
-  private def initialState(log: Logger[IO]): Stream[IO, SignallingRef[IO, State]] = {
+  private def initialState(implicit log: Logger[IO]): Stream[IO, SignallingRef[IO, State]] = {
     Stream.emit(State(last = 1.some, nums = Set(1)))
       .evalMap { state =>
         log.info(s"Initial state received: $state") *>
@@ -133,20 +131,20 @@ object Fs2StreamFeedback extends IOApp {
       }
   }
 
-  private def markers(log: Logger[IO], offset: Option[Int]) = {
+  private def markers(offset: Option[Int])(implicit log: Logger[IO]) = {
     val off = offset.getOrElse(0)
     Stream.emits(off + 1 to off + MarkersPerQuery)
       .evalTap(m => log.info(s"Mark received: $m"))
   }
 
-  private def snapshot(log: Logger[IO], sigState: SignallingRef[IO, State]) = {
+  private def snapshots(sigState: SignallingRef[IO, State])(implicit log: Logger[IO]) = {
     sigState.discrete
       .zipWithIndex
       .collect { case (state, idx) if idx > 0 && idx % SnapshotInterval == 0 => state }
       .evalTap(state => log.info(s"State snapshot made: $state"))
   }
 
-  private def ping(log: Logger[IO], sigState: SignallingRef[IO, State]) = {
+  private def pings(sigState: SignallingRef[IO, State])(implicit log: Logger[IO]) = {
     sigState.continuous
       .metered(PingInterval)
       .flatMap { state =>
