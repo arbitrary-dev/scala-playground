@@ -1,8 +1,8 @@
 import cats.effect.ExitCase._
 import cats.effect.{ExitCode, IO, IOApp}
 import cats.implicits._
-import fs2.concurrent.SignallingRef
-import fs2.{INothing, Stream}
+import fs2.concurrent.{Signal, SignallingRef}
+import fs2.{INothing, Pipe, Stream}
 import io.chrisdavenport.log4cats.Logger
 import io.chrisdavenport.log4cats.slf4j.Slf4jLogger
 
@@ -16,15 +16,13 @@ import scala.util.Random
   * Expected workflow is as follows:
   * 1. Initial state received
   * 2. Markers streamed from the offset stored in initial state
-  * 3. Markers update the state
-  * 4. New state passed back to step 2 and are used to stream new markers
-  * 5. At the same time all produced states (+ initial) are piped to [[Fs2StreamFeedback#snapshot]]
-  *    and [[Fs2StreamFeedback#ping]] separately for additional processing
-  * 6. In case of errors - the processing is retried with exponential backoff
+  * 3. Markers update the state continiously
+  * 4. Running state passed downstream to [[Fs2StreamFeedback#snapshots]]
+  * 5. Errors cause a mark to be processed again with exponential backoff
+  * 6. At the same time accumulated state is pinged with some time interval, see [[Fs2StreamFeedback#pings]]
   *
   * Unresolved questions:
-  * 1. Is [[SignallingRef]] approach for passing states optimal?
-  * 2. How to reset retry delays?
+  * 1. How to reset retry delays?
   */
 // @formatter:on
 object Fs2StreamFeedback extends IOApp {
@@ -42,57 +40,31 @@ object Fs2StreamFeedback extends IOApp {
 
   private case class State(last: Option[Int] = None, nums: Set[Int] = Set.empty)
 
-  def run(args: List[String]): IO[ExitCode] = {
+  def run(args: List[String]): IO[ExitCode] =
+    Slf4jLogger.fromClass[IO](this.getClass) flatMap { implicit log =>
+      nums.evalTap(ping)
+        .interruptAfter(ShutdownTimeout)
+        .compile.drain.as(ExitCode.Success)
+    }
+
+  private def nums(implicit log: Logger[IO]): Stream[IO, Set[Int]] = {
     val stream = for {
-      log <- Stream.eval(Slf4jLogger.fromClass[IO](this.getClass))
-      result <- buildStream(log)
-    } yield result
-    stream.interruptAfter(ShutdownTimeout)
-      .compile.drain.as(ExitCode.Success)
-  }
-
-  private def buildStream(implicit log: Logger[IO]): Stream[IO, INothing] = {
-    val states = for {
       _ <- Stream.eval(log.info("Hello world!"))
-      sigState <- initialState // TODO is [[SignallingRef]] optimal solution?
-      state <- {
-        (sigState.continuous flatMap { state =>
-          markers(offset = state.last)
-            .mapAccumulate(state) { (s, o) =>
-              val num = o % StateSize
-              val newNums = if (s.nums contains num) s.nums - num else s.nums + num
-              val newState = s.copy(last = o.some, newNums)
-              (newState, newState)
-            }
-            .map(_._1)
-            .map {
-              if (Random.nextInt(3) == 0)
-                throw new Exception("Something failed!")
-              else
-                _
-            }
-            .evalTap { s =>
-              sigState.set(s) *>
-                log.info(s"State updated: $s") *>
-                IO.sleep(StateUpdateDelay)
-            }
-        }).through(retryOnErrors)
-          .concurrently(snapshots(sigState))
-          .concurrently(pings(sigState))
-      }
-    } yield state
+      sigState <- initialState
+      snapshotting = states(sigState).through(snapshots)
+      pingSet <- pings(sigState).concurrently(snapshotting)
+    } yield pingSet
 
-    states.drain
-      .onFinalizeCase {
-        case Completed =>
-          log.info("Stream completed")
+    stream.onFinalizeCase {
+      case Completed =>
+        log.info("Stream completed")
 
-        case Canceled =>
-          log.warn("Stream cancelled")
+      case Canceled =>
+        log.warn("Stream cancelled")
 
-        case Error(t) =>
-          log.error(s"Stream closed due to failure: ${ t.getMessage }")
-      }
+      case Error(t) =>
+        log.error(s"Stream closed due to failure: ${ t.getMessage }")
+    }
   }
 
   private def retryOnErrors[A](implicit log: Logger[IO]) = (st: Stream[IO, A]) => {
@@ -131,32 +103,52 @@ object Fs2StreamFeedback extends IOApp {
       }
   }
 
+  private def states(sigState: SignallingRef[IO, State])(implicit log: Logger[IO]) =
+    (sigState.continuous flatMap { state =>
+      markers(offset = state.last)
+        .mapAccumulate(state) { (s, o) =>
+          val num = o % StateSize
+          val newNums = if (s.nums contains num) s.nums - num else s.nums + num
+          val newState = s.copy(last = o.some, newNums)
+          (newState, newState)
+        }
+        .map(_._1)
+        .map {
+          if (Random.nextInt(3) == 0)
+            throw new Exception("Something failed!")
+          else
+            _
+        }
+        .evalTap { s =>
+          sigState.set(s) *>
+            log.info(s"State updated: $s") *>
+            IO.sleep(StateUpdateDelay)
+        }
+    }).through(retryOnErrors)
+
   private def markers(offset: Option[Int])(implicit log: Logger[IO]) = {
     val off = offset.getOrElse(0)
     Stream.emits(off + 1 to off + MarkersPerQuery)
       .evalTap(m => log.info(s"Mark received: $m"))
   }
 
-  private def snapshots(sigState: SignallingRef[IO, State])(implicit log: Logger[IO]) = {
-    sigState.discrete
-      .zipWithIndex
+  private def snapshots(implicit log: Logger[IO]): Pipe[IO, State, INothing] =
+    _.zipWithIndex
       .collect { case (state, idx) if idx > 0 && idx % SnapshotInterval == 0 => state }
       .evalTap(state => log.info(s"State snapshot made: $state"))
-  }
+      .drain
 
-  private def pings(sigState: SignallingRef[IO, State])(implicit log: Logger[IO]) = {
-    sigState.continuous
-      .metered(PingInterval)
+  private def pings(sigState: Signal[IO, State])(implicit log: Logger[IO]) =
+    (Stream.eval(sigState.get) ++ sigState.continuous.metered(PingInterval))
       .flatMap { state =>
         Stream.emits(state.nums.grouped(PingLimit).toSeq)
           .covary[IO]
           .metered(PingsSendInterval)
       }
-      .evalTap { nums =>
-        if (nums.isEmpty)
-          log.info(s"Ping wasn't sent, state is empty")
-        else
-          log.info(s"Ping sent for: $nums")
-      }
-  }
+
+  private def ping(nums: Set[Int])(implicit log: Logger[IO]) =
+    if (nums.isEmpty)
+      log.info(s"Ping wasn't sent, state is empty")
+    else
+      log.info(s"Ping sent for: $nums")
 }
